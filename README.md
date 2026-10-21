@@ -21,6 +21,29 @@
 
 ---
 
+## 📅 Development Timeline
+
+Tachyon's development is structured into two main phases. We have successfully completed the foundational architecture and are now focused on scaling and enhancing performance.
+
+### ✅ Phase 1: Core Architecture (Achieved)
+We have built a fully functional, from-scratch blockchain that implements modern consensus and cryptographic patterns:
+
+- [x] **Cryptographic Foundation**: Implemented pure Python Ed25519 with RFC 8032 compliance and precomputed base-point tables for speed.
+- [x] **State Management**: Developed a production-grade Sparse Merkle Tree (SMT) for efficient state commitments and compact proofs.
+- [x] **Consensus Engine**: Built a stake-weighted BFT finality engine (>2/3 quorum) with a 6-stage pipelined block processor.
+- [x] **Transaction Management**: Integrated a priority-based transaction pool (mempool) and dynamic EIP-1559 style fee market.
+- [x] **Performance Benchmarking**: Validated the architecture with multi-node simulations, achieving ~1,500 TPS in controlled environments.
+
+### 🚧 Phase 2: Scaling & Optimization (In Progress)
+Our next milestones focus on real-world applicability and extreme performance:
+
+- [ ] **VRF-based Leader Election**: Moving beyond round-robin to Verifiable Random Function (VRF) for secure, unpredictable slot assignment.
+- [ ] **Network Optimizations**: Implementing gossip protocol enhancements for sub-100ms block propagation across distributed nodes.
+- [ ] **Smart Contract Support**: Defining a safe, sandboxed execution environment for custom programs (WASM or Python bytecode).
+- [ ] **Cross-Chain Compatibility**: Exploring interoperability bridges with existing BFT chains.
+
+---
+
 ## 📊 Performance Benchmarks
 
 *(Results from `scripts/benchmark.py`)*
