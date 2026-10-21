@@ -64,6 +64,90 @@ python -m tachyon.pow        # fair-play mining demo: ARM phone vs x86 server
 
 ---
 
+---
+
+## 📱 Mining from an Android Phone
+
+A phone cannot mine like a server. Android kills background CPU work (API 26+),
+thermal throttling cuts hash rate within minutes, and a 24/7 hash loop flattens
+the battery. So Tachyon uses **bounded work tickets**, not continuous mining.
+
+```
+phone                          pool
+  |-- calibrate local hash rate -->|
+  |                               |-- pick difficulty for ~3s of work on THIS device
+  |<------ signed ticket ---------|
+  |-- hash for a few seconds -----|
+  |------- submit nonce --------->|-- verify signature, expiry, single-use
+  |                               |-- credit weight = 2^difficulty
+  |<-------- accepted ------------|-- assemble a block when weight threshold is hit
+```
+
+The ticket is HMAC-signed, so a client cannot rewrite `difficulty` downward to
+claim credit for work it never did. Tickets are single-use, expire after 90s, and
+submissions get a 15s grace window so a phone that solved just before expiry is
+not punished for cellular latency.
+
+**Why this gives phones a fair shot:** credit is `2^difficulty` per share. A phone
+solves an easier ticket and earns 32,768; a server solves a harder one and earns
+1,048,576. The server earns more in absolute terms -- it did more work -- but
+neither tier is cheated on payout *per hash*. The pool aggregates millions of
+small shares into blocks so a phone participates meaningfully.
+
+### Run a pool (on the machine with the chain)
+
+```bash
+python -m tachyon.mobile_server --port 8080
+```
+
+Or programmatically:
+
+```python
+from tachyon.mobile_server import MiningServer
+import time
+s = MiningServer(port=8080)
+s.start()
+time.sleep(3600)
+```
+
+### Option A -- open it in the phone browser (no install)
+
+Browse to `http://<pool-ip>:8080/` on the phone. The page ships an inline
+synchronous SHA-256 (WebCrypto is async-per-call and ~100x too slow to drive a
+hash loop), calls the pool over `fetch`, and shows hash rate, difficulty,
+expected solve time and accumulated credit. Stop it any time; nothing is
+installed and no background service is registered.
+
+### Option B -- Termux CLI miner
+
+```bash
+pkg install python
+python scripts/mobile_mine.py --pool http://192.168.1.20:8080 --miner my-phone --tier 1
+```
+
+Same bounded loop: calibrate, request ticket, hash, submit, rest.
+
+### Pool endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/register` | `{miner, tier}` -> account |
+| POST | `/ticket` | `{miner, tier, hashes_per_second}` -> signed ticket |
+| POST | `/share` | `{ticket, nonce, elapsed_ms}` -> credit |
+| GET | `/status` | pool totals, accepted/rejected, blocks assembled |
+| GET | `/leaderboard` | ranked miners by credit |
+| GET | `/` | the embedded phone client |
+
+### Before exposing a pool beyond localhost
+
+1. Terminate TLS in front of it -- plain HTTP leaks tickets, and a sniffed ticket can be raced.
+2. Rate limit `/ticket` and `/share` per IP, or one client can drain the pool's CPU.
+3. Persist consumed ticket ids; a restart makes old tickets replayable within their TTL.
+4. Raise `BLOCK_WEIGHT_THRESHOLD`; the default is sized for demos.
+
+The server never leaks stack traces to clients and caps request bodies at 64 KB.
+
+
 ## 📊 Performance Benchmarks
 
 Measured with `scripts/benchmark.py` (10 blocks, 3 transactions per block, full Ed25519 signing and verification plus SMT updates):
@@ -116,13 +200,18 @@ tachyon/
 ├── election.py    # round-robin and stake-weighted leader election
 ├── pow.py         # ARM-friendly fair-play PoW layer
 ├── mobile.py      # tier-balanced quorum engine
+├── mobile_protocol.py  # signed work tickets, calibration, hash contract
+├── mobile_pool.py      # share accounting and block assembly
+├── mobile_server.py    # HTTP transport + embedded phone client
 ├── storage.py     # append-only ledger persistence
 ├── networking.py  # peer gossip
 ├── rpc.py         # JSON-RPC server
 └── cli.py         # command-line client
 
 scripts/benchmark.py        # throughput charts
+scripts/mobile_mine.py      # Termux/Android CLI miner
 tests/test_crypto.py        # RFC 8032 vectors
+tests/test_mobile.py        # mobile protocol, pool, HTTP (53 checks)
 ```
 
 ---

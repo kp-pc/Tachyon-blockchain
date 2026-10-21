@@ -4,6 +4,46 @@ All notable changes to Tachyon are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — Mining from Android phones
+
+- `tachyon/mobile_protocol.py` — bounded work tickets. A phone measures its own
+  hash rate, the pool sizes difficulty so the expected solve is ~3s, and tickets
+  are HMAC-signed so a client cannot lower its own difficulty. Work contract is
+  plain `sha256(seed || nonce_be8)` so a browser or Kotlin client can reproduce
+  it exactly.
+- `tachyon/mobile_pool.py` — share accounting with `2^difficulty` credit,
+  single-use ticket replay protection, a 15s submit grace window for cellular
+  latency, adaptive difficulty from observed solve times, and block assembly
+  once accumulated share weight crosses a threshold.
+- `tachyon/mobile_server.py` — stdlib HTTP transport plus an embedded phone
+  client page. Ships an inline synchronous SHA-256 because WebCrypto is
+  async-per-call and far too slow to drive a hash loop. Body cap 64 KB, no stack
+  traces leaked to clients.
+- `scripts/mobile_mine.py` — Termux/Android CLI miner using the same bounded
+  loop.
+- `tests/test_mobile.py` — 53 checks across protocol, pool and HTTP layers.
+
+### Verified
+
+- The inline JavaScript SHA-256 matches Python byte for byte across 8 nonces and
+  the target comparison agrees at every difficulty 8-32, including the
+  non-byte-aligned values where an off-by-one would silently break every phone.
+- Live CLI miner against a running pool: 4 rounds, 4 shares accepted, 4 blocks
+  assembled, 0 rejections.
+- Forged difficulty, replay, expired ticket, non-solving nonce, malformed ticket,
+  bad JSON, oversized body and unknown route are all rejected as intended.
+
+### Known limitations
+
+- No TLS and no per-IP rate limiting yet; the module documents what production
+  requires.
+- Consumed ticket ids are in memory, so a pool restart makes unexpired tickets
+  replayable within their TTL.
+- A phone with a throttled CPU gets easier tickets, not equal say in consensus --
+  credit fairness is per-hash payout, not voting power.
+
 ## [0.1.0] - 2026-10-22
 
 First public release. Tachyon is an **experimental, unaudited** research
