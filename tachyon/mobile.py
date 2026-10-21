@@ -1,4 +1,9 @@
-"""Mobile-first consensus layer for Tachyon."""
+"""Mobile-first consensus layer for Tachyon.
+
+Fair-play rule: if a hardware tier has at least one registered miner, that tier
+must contribute at least its configured share of votes before quorum is granted.
+Tiers with no registered miners are skipped so small test networks still work.
+"""
 from __future__ import annotations
 
 import sys
@@ -7,36 +12,66 @@ import os
 if __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from typing import List, Dict
-from tachyon.pow import MinerInfo, ComputeTier, DifficultyEngine, find_fair_block_nonce
+from typing import Dict, List
+
+from tachyon.pow import ComputeTier, DifficultyEngine, MinerInfo
+
+
+DEFAULT_TIER_QUORUM: Dict[ComputeTier, float] = {
+    ComputeTier.ARM_MOBILE: 0.10,
+    ComputeTier.ARM_LAPTOP: 0.10,
+    ComputeTier.X86_DESKTOP: 0.10,
+    ComputeTier.X86_SERVER: 0.10,
+}
 
 
 class FairPlayEngine:
-    """Manages the consensus participation of diverse hardware tiers."""
+    """Tracks miner hardware tiers and enforces tier-balanced quorum."""
 
-    def __init__(self):
+    def __init__(self, tier_quorum: Dict[ComputeTier, float] | None = None):
         self.miners: Dict[str, MinerInfo] = {}
         self.difficulty_engine = DifficultyEngine()
-        self.tier_quorum = {ComputeTier.ARM_MOBILE: 0.1, ComputeTier.ARM_LAPTOP: 0.1, ComputeTier.X86_DESKTOP: 0.2, ComputeTier.X86_SERVER: 0.2}
+        self.tier_quorum = dict(tier_quorum or DEFAULT_TIER_QUORUM)
 
-    def register_miner(self, address: str, tier: int) -> None:
-        self.miners[address] = MinerInfo(address, tier)
+    def register_miner(self, address: str, tier: int | ComputeTier) -> None:
+        self.miners[address] = MinerInfo(address=address, tier=tier)
+
+    # Backwards compatible alias
+    register = register_miner
+
+    def miners_by_tier(self) -> Dict[ComputeTier, List[str]]:
+        groups: Dict[ComputeTier, List[str]] = {t: [] for t in ComputeTier}
+        for address, info in self.miners.items():
+            groups[info.tier].append(address)
+        return groups
 
     def check_quorum(self, votes: List[str]) -> bool:
-        tier_votes = {1: 0, 2: 0, 4: 0, 8: 0}
-        total_votes = len(votes)
-        if total_votes == 0:
+        total = len(votes)
+        if total == 0:
             return False
-        
+
+        groups = self.miners_by_tier()
+        counts: Dict[ComputeTier, int] = {t: 0 for t in ComputeTier}
+        valid = 0
         for address in votes:
-            miner = self.miners.get(address)
-            if miner:
-                tier_votes[miner.tier.value] += 1
-        
-        for tier, required_share in self.tier_quorum.items():
-            if total_votes > 0 and tier_votes[tier.value] / total_votes < required_share:
-                # If we don't have enough votes from a tier, it's not a full quorum
-                # In a real network, you'd wait or adjust.
-                pass 
-        # Simplified quorum: at least one mobile and one server
-        return tier_votes[1] > 0 and tier_votes[8] > 0
+            info = self.miners.get(address)
+            if info is None:
+                continue
+            counts[info.tier] += 1
+            valid += 1
+
+        if valid == 0:
+            return False
+
+        for tier, required in self.tier_quorum.items():
+            if not groups[tier]:
+                continue  # no miners in this tier -> cannot require its share
+            if counts[tier] / valid < required:
+                return False
+        return True
+
+    def mine_for_tier(self, payload: bytes, address: str, max_attempts: int = 2_000_000):
+        info = self.miners.get(address)
+        tier = info.tier if info else ComputeTier.ARM_MOBILE
+        from tachyon.pow import find_fair_block_nonce
+        return find_fair_block_nonce(payload, tier, self.difficulty_engine, max_attempts)

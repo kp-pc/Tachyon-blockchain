@@ -106,3 +106,10 @@ def simulate_fair_mining(payload: bytes, rounds: int = 5) -> None:
 
 if __name__ == "__main__":
     simulate_fair_mining(b"tachyon_genesis", rounds=3)
+
+
+def verify_block_nonce(payload: bytes, nonce: int, tier: ComputeTier, engine: DifficultyEngine) -> bool:
+    """Verify a nonce against the fair-play target for a tier."""
+    if nonce is None:
+        return False
+    return engine.verify_block(payload, nonce, tier)
