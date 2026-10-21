@@ -1,79 +1,68 @@
-"""ARM-optimized lightweight Proof-of-Work-Lite (PoW-Lite).
+"""ARM-optimized Proof-of-Work with Dynamic Fair Play Difficulty.
 
-Designed for mobile (ARM) participation, this module uses a simple, low-overhead
-hashing loop that doesn't require specialized CPU instructions (like SHA-NI).
-It scales difficulty based on the participant's 'Compute Tier'.
+This module implements a hardware tier system to ensure that small (ARM) and
+big (X86) miners have an equal playing field.
 """
 from __future__ import annotations
-
 import time
-from dataclasses import dataclass
-from typing import Optional
-
+from enum import Enum
+from typing import Dict
 from .crypto import digest
-from .encoding import u64
 
+class ComputeTier(Enum):
+    ARM_MOBILE = 1
+    ARM_LAPTOP = 2
+    X86_DESKTOP = 4
+    X86_SERVER = 8
 
-class ComputeTier:
-    """Represents hardware capability tiers for fair difficulty scaling."""
-    MOBILE_ARM = 1
-    LAPTOP_X86 = 2
-    DESKTOP_X86 = 4
-    SERVER = 8
+class DifficultyEngine:
+    def __init__(self, base_difficulty: int = 8):
+        self.base_difficulty = base_difficulty
+        # 'Fair Play' factor: higher tiers get higher difficulty so their 
+        # speed advantage doesn't result in a 100% win rate in every block.
+        self.tier_multipliers: Dict[ComputeTier, int] = {
+            ComputeTier.ARM_MOBILE: 1,    # Easiest target
+            ComputeTier.ARM_LAPTOP: 2,   
+            ComputeTier.X86_DESKTOP: 4,   
+            ComputeTier.X86_SERVER: 8     # Hardest target
+        }
 
+    def get_target_difficulty(self, tier: ComputeTier) -> int:
+        # We add a scaled amount to the base difficulty based on the tier.
+        return self.base_difficulty + (self.tier_multipliers[tier] - 1) * 2
 
-@dataclass
-class MinerInfo:
-    address: str
-    tier: int  # 1, 2, 4, or 8
+    def verify_block(self, payload: bytes, nonce: int, tier: ComputeTier) -> bool:
+        target_diff = self.get_target_difficulty(tier)
+        h = digest("tachyon-pow", payload, nonce.to_bytes(4, 'big'))
+        threshold = (1 << (256 - target_diff))
+        return int.from_bytes(h, 'big') < threshold
 
-
-def find_block_nonce(payload: bytes, target_bits: int, tier: int) -> int:
-    """Find a nonce that satisfies a difficulty target for a given tier.
-
-    On ARM, we use a simpler loop that is more predictable than high-end CPUs.
-    Dynamic difficulty: target_bits represents the 'weight' we're trying to achieve.
-    Smaller tiers (mobile) get a lower effective target difficulty so they can still participate.
-    """
-    # For mobile, we artificially lower the target difficulty to ensure participation
-    effective_target_bits = max(8, target_bits - (tier * 2))
-    target_value = 0x000000FF if tier == ComputeTier.MOBILE_ARM else (1 << (32 - effective_target_bits))
-    
+def find_fair_block_nonce(payload: bytes, tier: ComputeTier, engine: DifficultyEngine) -> int:
     nonce = 0
-    start_time = time.perf_counter()
-    
+    target_diff = engine.get_target_difficulty(tier)
+    threshold = (1 << (256 - target_diff))
     while True:
-        h = digest("tachyon-pow", payload, u64(nonce))
-        
-        # For mobile, we check if the first byte is below a threshold
-        # For higher tiers, we check the bit-depth target
-        if tier == ComputeTier.MOBILE_ARM:
-            # Mobile friendly: just need a specific hash prefix (easy)
-            if h[0] < 0x40:  # ~1/256 probability, very fast
-                return nonce
-        else:
-            if int.from_bytes(h[:4], "big") < target_value:
-                return nonce
-        
-        # Yield to OS on mobile to prevent battery drain
-        if nonce % 100000 == 0: 
-            if tier == ComputeTier.MOBILE_ARM:
-                time.sleep(0.001)
-            
-            # Prevent infinite loop in simulation
-            if time.perf_counter() - start_time > 5.0:
-                break
+        h = digest("tachyon-pow", payload, nonce.to_bytes(4, 'big'))
+        if int.from_bytes(h, 'big') < threshold:
+            return nonce
         nonce += 1
-    
-    raise ValueError("PoW target too high or timeout reached")
 
-
-def verify_nonce(payload: bytes, nonce: int, target_bits: int, tier: int) -> bool:
-    """Verify that a nonce found by a miner satisfies the tier-specific difficulty."""
-    h = digest("tachyon-pow", payload, u64(nonce))
-    if tier == ComputeTier.MOBILE_ARM:
-        return h[0] < 0x40
-    
-    effective_target_bits = max(8, target_bits - (tier * 2))
-    target_value = (1 << (32 - effective_target_bits))
-    return int.from_bytes(h[:4], "big") < target_value
+def simulate_fair_mining(payload: bytes, rounds: int = 5) -> None:
+    engine = DifficultyEngine()
+    print(f"--- Fair Play Mining Simulation ---")
+    print(f"[INFO] ARM Mobile Target: {engine.get_target_difficulty(ComputeTier.ARM_MOBILE)}")
+    print(f"[INFO] X86 Server Target: {engine.get_target_difficulty(ComputeTier.X86_SERVER)}")
+    print()
+    for r in range(rounds):
+        t0 = time.perf_counter()
+        arm_nonce = find_fair_block_nonce(payload + f"-arm-{r}".encode(), ComputeTier.ARM_MOBILE, engine)
+        arm_time = time.perf_counter() - t0
+        
+        t0 = time.perf_counter()
+        srv_nonce = find_fair_block_nonce(payload + f"-srv-{r}".encode(), ComputeTier.X86_SERVER, engine)
+        srv_time = time.perf_counter() - t0
+        
+        print(f"Round {r}: ARM Phone ({arm_time*1000:.2f}ms) vs Server ({srv_time*1000:.2f}ms)")
+        
+if __name__ == "__main__":
+    simulate_fair_mining(b"tachyon_genesis", rounds=3)

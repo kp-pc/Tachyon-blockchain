@@ -40,6 +40,7 @@ Our next milestones focus on real-world applicability and extreme performance:
 - [ ] **VRF-based Leader Election**: Moving beyond round-robin to Verifiable Random Function (VRF) for secure, unpredictable slot assignment.
 - [ ] **Network Optimizations**: Implementing gossip protocol enhancements for sub-100ms block propagation across distributed nodes.
 - [ ] **Smart Contract Support**: Defining a safe, sandboxed execution environment for custom programs (WASM or Python bytecode).
+- [x] **ARM-Friendly Fair Play**: Implemented dynamic difficulty scaling where mobile (ARM) and server (X86) miners are 'balanced' via tier-specific targets.
 - [ ] **Cross-Chain Compatibility**: Exploring interoperability bridges with existing BFT chains.
 
 ---
@@ -107,6 +108,7 @@ python scripts/benchmark.py
 │   ├── executor.py    # Optimistic parallel execution
 │   ├── mempool.py     # Priority transaction pool
 │   ├── election.py    # Stake-weighted leader rotation
+│   ├── pow.py         # ARM-friendly fair-play PoW
 │   ├── pow.py         # ARM-friendly PoW-Lite
 │   ├── mobile.py      # Fair Play Consensus Engine
 │   ├── networking.py  # P2P gossip protocol
