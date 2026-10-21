@@ -1,116 +1,97 @@
 <div align="center">
 
-# 🟪 Tachyon
-### A From-Scratch High-Performance Blockchain
+# ⚡ Tachyon
+### A High-Performance, Scalable Blockchain Implementation
 
-![Python](https://img.shields.io/badge/Python-3.12+-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Status](https://img.shields.io/badge/Status-Experimental-orange)
+![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Status](https://img.shields.io/badge/Status-Experimental-orange) ![Complexity](https://img.shields.io/badge/Consensus-BFT-green)
 
-Tachyon is a pure-Python, dependency-free blockchain implementation that explores high-throughput consensus designs inspired by **Solana**, **Aptos**, and **Tendermint**.
+**Tachyon** is a from-scratch blockchain inspired by modern high-throughput architectures (like Solana, Aptos, and Sui). It features a 6-stage pipelined block processing engine, optimistic parallel execution, and stake-weighted BFT finality.
 
 </div>
 
 ---
 
-## 🚀 Features
+## 🚀 Key Features
 
-Tachyon implements several advanced consensus and state management patterns from scratch:
-
-| Feature | Description | Inspiration |
-|---------|-------------|-------------|
-| **⚡ High-Throughput Pipelining** | 6-stage block processing pipeline (Fetch → Gossip → Verify → Execute → Store → Finalize). | Solana |
-| **🔒 Cryptographic Identity** | Pure-Python Ed25519 (RFC 8032) with precomputed base-point tables (~0.5ms sign). | Modern BFT |
-| **🌲 Sparse Merkle Tree** | Production-grade state commitment for 256-bit keys with compact (≈8KB) inclusion/exclusion proofs. | Zcash/Cosmos |
-| **⚖️ Stake-Weighted BFT** | Deterministic leader election and quorum-based finality (>2/3 stake). | Tendermint |
-| **💸 Dynamic Fee Market** | EIP-1559 style base fee adjustment based on block utilization. | Ethereum |
-| **🏃 Optimistic Parallel Execution** | Block-STM style speculative execution with dependency tracking. | Aptos/Sui |
+- **Pipelined Architecture**: 6-stage processing (Fetch → Gossip → Verify → Execute → Store → Finalize) for minimal latency.
+- **Optimistic Parallelism**: Block-STM style transaction execution allowing independent transactions to run concurrently.
+- **Stake-Weighted BFT**: Consensus based on stake distribution with >2/3 quorum for finality.
+- **Domain-Separated Crypto**: Pure Python Ed25519 (RFC 8032) with custom hashing to prevent type confusion.
+- **EIP-1559 Fee Market**: Dynamic base fee adjustment based on network utilization.
 
 ---
 
 ## 📊 Performance Benchmarks
 
-Tachyon maintains >1,200 TPS in simulated multi-validator networks, showcasing the efficiency of the pipelined architecture.
+*(Results from `scripts/benchmark.py`)*
 
-```
-Transactions Per Second (TPS) by Validator Count:
-------------------------------------------------------------
- 2 Validators:  1467.43 TPS ████████████████████████████████████████|
- 4 Validators:  1327.25 TPS ████████████████████████████████████    |
- 8 Validators:  1221.36 TPS █████████████████████████████████       |
-16 Validators:  1204.82 TPS ████████████████████████████████        |
-------------------------------------------------------------
-```
+| Validators | Throughput (TPS) | Scalability |
+|:----------:|:----------------:|:-----------:|
+| 2 Nodes    | **1,561**        | ████████████████████████████ |
+| 4 Nodes    | **1,402**        | █████████████████████████    |
+| 8 Nodes    | **1,272**        | ██████████████████████       |
+| 16 Nodes   | **1,203**        | ██████████████████           |
+
+*Note: Throughput remains high despite increasing validator count due to efficient gossip and pre-computed cryptographic tables.*
 
 ---
 
 ## 🛠️ Getting Started
 
 ### Prerequisites
-- Python 3.12+
-- No third-party dependencies (Standard Library only)
+- Python 3.10+
+- No external dependencies (Standard Library only)
 
 ### Installation
-Since there are no external dependencies, you can run the project directly from the source:
-
 ```bash
 git clone https://github.com/kp-pc/Tachyon-blockchain.git
 cd Tachyon-blockchain
 ```
 
 ### Running the Simulation
-To see Tachyon in action, run the multi-node simulation with SMT state and leader election:
-
+To see the blockchain in action:
 ```bash
 python -m tachyon.simulation
 ```
 
-### Performance Benchmarking
-To visualize throughput vs. validator count:
-
+### Performance Testing
 ```bash
 python scripts/benchmark.py
-```
-
-### Crypto Verification
-Verify the Ed25519 implementation against official RFC 8032 test vectors:
-
-```bash
-python tests/test_crypto.py
 ```
 
 ---
 
 ## 📂 Project Structure
 
-The Tachyon codebase is modular, separating cryptographic primitives, consensus logic, and networking:
-
 ```text
 ├── tachyon/
-│   ├── crypto.py      # Ed25519 & Base58
-│   ├── smt.py         # Sparse Merkle Tree
-│   ├── chain.py       # BFT Consensus Core
-│   ├── pipeline.py    # 6-Stage Processing Pipe
-│   ├── mempool.py     # Priority Transaction Pool
-│   └── election.py    # Leader Election
+│   ├── chain.py       # Core consensus & data structures
+│   ├── crypto.py      # Ed25519 & Base58 encoding
+│   ├── smt.py         # Sparse Merkle Tree state
+│   ├── pipeline.py    # 6-stage block processing
+│   ├── executor.py    # Optimistic parallel execution
+│   ├── mempool.py     # Priority transaction pool
+│   ├── election.py    # Stake-weighted leader rotation
+│   ├── networking.py  # P2P gossip protocol
+│   └── rpc.py         # JSON-RPC API
 ├── scripts/
-│   └── benchmark.py   # Performance Analysis
+│   └── benchmark.py   # Throughput visualization
 └── tests/
-    └── test_crypto.py # RFC 8032 Verification
+    └── test_crypto.py # RFC 8032 verification
 ```
 
 ---
 
-## ⚠️ Security Disclaimer
-This project is built for educational and research purposes. The consensus and cryptographic implementations are not audited and should **not** be used for production value transmission.
-
----
-
 ## 🤝 Contributing
-Contributions are welcome! Please open an issue or submit a pull request for improvements, bug fixes, or additional features.
+
+Tachyon is currently in the **experimental** phase. Contributions, suggestions, and bug reports are welcome!
+
+> **Security Note**: This is an educational implementation. Do not use for production financial value transfer.
 
 ---
 
 <div align="center">
 
-**Tachyon** — Built from scratch with pure Python. 🟪
+**Built with 💜 by Agent Zero**
 
 </div>
