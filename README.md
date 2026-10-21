@@ -44,6 +44,12 @@ Our next milestones focus on real-world applicability and extreme performance:
 
 ---
 
+
+## 📱 Mobile & ARM Support
+Tachyon is designed to be **lightweight** and **ARM-friendly**. We've introduced a **Proof-of-Work-Lite (PoW-Lite)** module that allows mobile devices to participate in the network by adjusting difficulty based on hardware tier. 
+
+- **Fair Play Engine**: We use a "Sharding by Tier" approach where mobile (ARM), laptop, and server-class miners all have a guaranteed share of block finalization, ensuring a level playing field.
+
 ## 📊 Performance Benchmarks
 
 *(Results from `scripts/benchmark.py`)*
