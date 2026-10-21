@@ -13,7 +13,8 @@ class FairPlayEngine:
 
     def __init__(self):
         self.miners: Dict[str, MinerInfo] = {}
-        self.tier_quorum = {ComputeTier.MOBILE_ARM: 0.2, ComputeTier.LAPTOP_X86: 0.3, ComputeTier.DESKTOP_X86: 0.3, ComputeTier.SERVER: 0.2}
+        # A 'fair' quorum ensures that mobile devices are not drowned out by servers
+        self.tier_quorum = {ComputeTier.MOBILE_ARM: 0.1, ComputeTier.LAPTOP_X86: 0.1, ComputeTier.DESKTOP_X86: 0.2, ComputeTier.SERVER: 0.1}
 
     def register_miner(self, address: str, tier: int) -> None:
         self.miners[address] = MinerInfo(address, tier)

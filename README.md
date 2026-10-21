@@ -65,6 +65,12 @@ Tachyon is designed to be **lightweight** and **ARM-friendly**. We've introduced
 
 ---
 
+
+## 📱 Mobile & ARM Support
+Tachyon is designed to be **lightweight** and **ARM-friendly**. We've introduced a **Proof-of-Work-Lite (PoW-Lite)** module that allows mobile devices to participate in the network by adjusting difficulty based on hardware tier. 
+
+- **Fair Play Engine**: We use a "Sharding by Tier" approach where mobile (ARM), laptop, and server-class miners all have a guaranteed share of block finalization, ensuring a level playing field.
+
 ## 🛠️ Getting Started
 
 ### Prerequisites
@@ -101,6 +107,8 @@ python scripts/benchmark.py
 │   ├── executor.py    # Optimistic parallel execution
 │   ├── mempool.py     # Priority transaction pool
 │   ├── election.py    # Stake-weighted leader rotation
+│   ├── pow.py         # ARM-friendly PoW-Lite
+│   ├── mobile.py      # Fair Play Consensus Engine
 │   ├── networking.py  # P2P gossip protocol
 │   └── rpc.py         # JSON-RPC API
 ├── scripts/
