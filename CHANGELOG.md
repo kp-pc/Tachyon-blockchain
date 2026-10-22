@@ -6,6 +6,37 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed — claims that were not true yet
+
+Two features were advertised before they were real. Both are now implemented and
+tested rather than merely documented.
+
+- **State actually commits through the Sparse Merkle Tree.** `State` previously
+  computed a plain Merkle root over sorted key/value digests and `smt.py` was
+  never imported by `chain.py`. `State` now maintains a real `SparseMerkleTree`,
+  derives a 256-bit slot per application key, and exposes `prove()` for
+  inclusion (key present) and exclusion (key absent) proofs.
+- **SMT keys are fixed at 32 bytes.** `int.from_bytes` mapped `b"\x01"` and
+  `b"\x00\x01"` to the same index, so a variable-length key silently
+  overwrote another key's leaf and broke its proof. Mixed lengths are now
+  rejected with `ValueError` instead of corrupting state.
+- **Pooled shares produce real blocks.** `MobilePool` incremented a
+  `blocks_assembled` counter without ever constructing a `Block`. The new
+  `mobile_chain.BlockAssembler` builds genuine `BlockHeader`/`Block` values with
+  correct `parent_slot`/`parent_hash` linkage, one reward `Transaction` per
+  credited miner, a `transactions_root` over that set, and a `state_root` equal
+  to the SMT root after crediting.
+- Miner balances are committed into SMT-backed state, so a balance is provable
+  against a block header's `state_root`, and `verify_chain()` detects tampering
+  of either `parent_hash` or `transactions_root`.
+
+### Added — tests
+
+- `tests/test_mobile_chain.py` — 59 checks over SMT proofs, key-length
+  rejection, order independence, State commitment, assembler linkage, balance
+  proofs and tamper detection.
+
+
 ### Added — Mining from Android phones
 
 - `tachyon/mobile_protocol.py` — bounded work tickets. A phone measures its own

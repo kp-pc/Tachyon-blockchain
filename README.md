@@ -203,6 +203,7 @@ tachyon/
 ├── mobile_protocol.py  # signed work tickets, calibration, hash contract
 ├── mobile_pool.py      # share accounting and block assembly
 ├── mobile_server.py    # HTTP transport + embedded phone client
+├── mobile_chain.py     # pooled shares -> real hash-linked blocks
 ├── storage.py     # append-only ledger persistence
 ├── networking.py  # peer gossip
 ├── rpc.py         # JSON-RPC server
@@ -212,6 +213,7 @@ scripts/benchmark.py        # throughput charts
 scripts/mobile_mine.py      # Termux/Android CLI miner
 tests/test_crypto.py        # RFC 8032 vectors
 tests/test_mobile.py        # mobile protocol, pool, HTTP (53 checks)
+tests/test_mobile_chain.py  # SMT commitment + block assembly (59 checks)
 ```
 
 ---

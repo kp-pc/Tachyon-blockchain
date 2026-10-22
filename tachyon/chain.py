@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from .encoding import u64, i64, digest, canonical_json
 from .crypto import KeyPair, verify, digest as crypto_digest
 from .merkle import root as merkle_root
+from .smt import SparseMerkleTree
 
 # ---------- Constants ----------
 SLOT_MS = 400
@@ -98,33 +99,47 @@ class Vote:
 # ---------- State ----------
 
 class State:
-    """Simple key-value state with Merkle root."""
+    """Key-value state committed through a Sparse Merkle Tree.
+
+    Arbitrary application keys are hashed into 256-bit slots, because an SMT
+    indexes by a fixed-width path. ``set`` updates the slot in place, so the
+    root is order-independent and a single-key update is O(depth) instead of
+    rebuilding every leaf.
+
+    ``prove``/``get`` remain keyed by the caller's original key: the slot
+    derivation is an internal detail, but proofs are over the slot, so a
+    verifier recomputes it the same way.
+    """
+
+    SLOT_TAG = "state_slot"
 
     def __init__(self):
         self._data: Dict[bytes, bytes] = {}
-        self._rebuild()
+        self._smt = SparseMerkleTree()
+
+    @classmethod
+    def slot(cls, key: bytes) -> bytes:
+        """Derive the fixed 256-bit SMT slot for an application key."""
+        return crypto_digest(cls.SLOT_TAG, key)
 
     def set(self, key: bytes, value: bytes) -> None:
         self._data[key] = value
-        self._rebuild()
+        self._smt.set(self.slot(key), value)
 
     def get(self, key: bytes) -> Optional[bytes]:
         return self._data.get(key)
 
     def root(self) -> bytes:
-        return self._root
+        return self._smt.root()
 
-    def _rebuild(self) -> None:
-        if not self._data:
-            self._root = digest("smt_empty")
-            return
-        leaves = [crypto_digest("smt_leaf", k, v) for k, v in sorted(self._data.items())]
-        self._root = merkle_root(leaves)
+    def prove(self, key: bytes):
+        """Inclusion proof when the key exists, exclusion proof when it does not."""
+        return self._smt.prove(self.slot(key), self._data.get(key))
 
     def copy(self) -> "State":
         st = State()
         st._data = dict(self._data)
-        st._root = self._root
+        st._smt = self._smt.copy()
         return st
 
 

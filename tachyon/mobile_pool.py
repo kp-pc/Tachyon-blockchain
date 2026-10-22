@@ -40,6 +40,7 @@ from .mobile_protocol import (
     calibrate_difficulty,
     share_is_valid,
 )
+from .mobile_chain import BlockAssembler
 
 SUBMIT_GRACE_MS = 15_000
 BLOCK_WEIGHT_THRESHOLD = 1 << 24  # ~16.7M share weight per block
@@ -56,6 +57,7 @@ class ShareRecord:
     accepted_at_ms: int
     credited: bool
     reason: str
+    block_hash: Optional[bytes] = None
 
 
 @dataclass
@@ -77,9 +79,13 @@ class MobilePool:
         target_seconds: float = 3.0,
         block_weight_threshold: int = BLOCK_WEIGHT_THRESHOLD,
         issuer: Optional[TicketIssuer] = None,
+        assembler: Optional[BlockAssembler] = None,
     ):
         self.issuer = issuer or TicketIssuer(target_seconds=target_seconds)
         self.block_weight_threshold = block_weight_threshold
+        # When an assembler is supplied, crossing the threshold produces a real,
+        # hash-linked chain block instead of only incrementing a counter.
+        self.assembler = assembler
         self._lock = threading.RLock()
         self._accounts: Dict[str, MinerAccount] = {}
         self._open_tickets: Dict[str, WorkTicket] = {}
@@ -87,6 +93,7 @@ class MobilePool:
         self._recent_shares: Deque[ShareRecord] = deque(maxlen=500)
         self._pending_weight = 0
         self._blocks_assembled = 0
+        self._last_block_hash: Optional[bytes] = None
         self._recent_solve_ms: Deque[int] = deque(maxlen=20)
 
     # ---------- registration and tickets ----------
@@ -205,6 +212,13 @@ class MobilePool:
             self._consumed_tickets.add(ticket.ticket_id)
             self._open_tickets.pop(ticket.ticket_id, None)
             self._pending_weight += weight
+            if self.assembler is not None:
+                # Credit the assembler without letting it auto-assemble: this
+                # pool decides when a block is due.
+                self.assembler._pending[ticket.miner] = (
+                    self.assembler._pending.get(ticket.miner, 0) + weight
+                )
+                self.assembler._pending_total += weight
 
             if elapsed_ms is not None and elapsed_ms >= 0:
                 self._recent_solve_ms.append(int(elapsed_ms))
@@ -224,9 +238,24 @@ class MobilePool:
 
             # 5. Block assembly
             if self._pending_weight >= self.block_weight_threshold:
+                threshold_weight = self._pending_weight
                 self._pending_weight = 0
                 self._blocks_assembled += 1
                 record.reason = "accepted (block assembled)"
+
+                if self.assembler is not None:
+                    # Turn the accumulated credit into a genuine chain block.
+                    # The assembler owns its own accounting, so feed it the
+                    # weight this pool has aggregated since the last block.
+                    try:
+                        assembled = self.assembler.assemble()
+                    except Exception as exc:  # never lose an accepted share
+                        record.reason = f"accepted (block assembly failed: {type(exc).__name__})"
+                    else:
+                        if assembled is not None:
+                            self._last_block_hash = assembled.block_hash
+                            record.block_hash = assembled.block_hash
+                            record.reason = f"accepted (block {assembled.slot} assembled)"
 
             return record
 
@@ -248,6 +277,12 @@ class MobilePool:
                 "block_weight_threshold": self.block_weight_threshold,
                 "blocks_assembled": self._blocks_assembled,
                 "open_tickets": len(self._open_tickets),
+                "last_block_hash": (
+                    self._last_block_hash.hex() if self._last_block_hash else None
+                ),
+                "real_blocks": (
+                    len(self.assembler.assembled) if self.assembler is not None else 0
+                ),
             }
 
     def leaderboard(self, limit: int = 10) -> List[dict]:

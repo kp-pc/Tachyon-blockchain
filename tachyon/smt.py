@@ -14,6 +14,18 @@ for _ in range(256):
     _EMPTY_HASHES.append(digest(SMT_NODE_TAG, _EMPTY_HASHES[-1], _EMPTY_HASHES[-1]))
 EMPTY_ROOT = _EMPTY_HASHES[256]
 
+def _validate_key(key: bytes) -> None:
+    """SMT keys are fixed 256-bit slots.
+
+    Variable-length keys are rejected rather than coerced: ``int.from_bytes``
+    maps b"\x01" and b"\x00\x01" to the same index 1, so accepting mixed
+    lengths would let one insert silently overwrite another key's leaf.
+    """
+    if not isinstance(key, (bytes, bytearray)):
+        raise TypeError(f"SMT key must be bytes, got {type(key).__name__}")
+    if len(key) != 32:
+        raise ValueError(f"SMT key must be exactly 32 bytes, got {len(key)}")
+
 def _key_to_path(key: bytes) -> List[int]:
     path = []
     for byte in key:
@@ -51,6 +63,7 @@ class SparseMerkleTree:
         with self._lock: return self._root
 
     def set(self, key: bytes, value: bytes) -> None:
+        _validate_key(key)
         with self._lock:
             idx = int.from_bytes(key, "big")
             leaf_hash = _hash_leaf(key, value) if value else _EMPTY_LEAF
@@ -66,7 +79,15 @@ class SparseMerkleTree:
                 self._nodes[(level, curr_idx)] = curr_hash
             self._root = curr_hash
 
+    def copy(self) -> "SparseMerkleTree":
+        with self._lock:
+            clone = SparseMerkleTree()
+            clone._nodes = dict(self._nodes)
+            clone._root = self._root
+            return clone
+
     def prove(self, key: bytes, value: Optional[bytes]) -> SMTProof:
+        _validate_key(key)
         with self._lock:
             idx = int.from_bytes(key, "big")
             branch = []
