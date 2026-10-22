@@ -8,6 +8,7 @@ import threading
 from typing import Any, Callable, Dict, Optional
 
 from .chain import Ledger, BlockHeader, Block, Transaction, Vote, BASE_FEE_INITIAL
+from .lightclient import balance_key, proof_to_dict, latest_state_root
 
 
 class JsonRpcServer:
@@ -23,6 +24,8 @@ class JsonRpcServer:
             "getFinalizedSlot": self.get_finalized_slot,
             "getBalance": self.get_balance,
             "getLatestBlockHash": self.get_latest_block_hash,
+            "getLatestBlockHeader": self.get_latest_block_header,
+            "getMinerBalanceProof": self.get_miner_balance_proof,
         }
         self._server: Optional[socket.socket] = None
         self._running = False
@@ -103,6 +106,37 @@ class JsonRpcServer:
 
     def get_balance(self, address: str) -> int:
         return self.ledger.get_stake(address)
+
+    def get_latest_block_header(self) -> Optional[dict]:
+        """Header fields a light client needs, without the transaction bodies."""
+        if not self.ledger.blocks:
+            return None
+        block = self.ledger.blocks[max(self.ledger.blocks)]
+        return {
+            "slot": block.header.slot,
+            "hash": block.header.hash().hex(),
+            "parent_slot": block.header.parent_slot,
+            "parent_hash": block.header.parent_hash.hex(),
+            "state_root": block.header.state_root.hex(),
+            "transactions_root": block.header.transactions_root.hex(),
+            "leader": block.header.leader,
+            "timestamp": block.header.timestamp,
+        }
+
+    def get_miner_balance_proof(self, address: str) -> dict:
+        """SMT inclusion proof for a miner's committed balance.
+
+        The caller must verify the returned proof against a header's
+        ``state_root``; this response alone proves nothing.
+        """
+        if not isinstance(address, str) or not address:
+            raise ValueError("address must be a non-empty string")
+        proof = proof_to_dict(self.ledger.state.prove(balance_key(address)))
+        return {
+            "address": address,
+            "state_root": self.ledger.state.root().hex(),
+            "proof": proof,
+        }
 
     def get_latest_block_hash(self) -> str:
         if not self.ledger.blocks:

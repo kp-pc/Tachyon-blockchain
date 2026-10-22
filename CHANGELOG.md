@@ -6,6 +6,41 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added - Light-client balance proofs
+
+A client can now verify its own balance against a block header instead of
+trusting the node it talks to.
+
+- `tachyon/lightclient.py` - slot derivation, wire (de)serialisation of SMT
+  proofs with strict validation, and `verify_balance_proof()` which rejects a
+  proof presented for a different account rather than silently verifying it.
+- `rpc.py` - `getLatestBlockHeader` and `getMinerBalanceProof`. Deliberately not
+  overloaded onto `getBalance`, which returns staking weight; conflating the two
+  would have silently returned the wrong quantity for miners.
+- `mobile_server.py` - `GET /balance-proof?miner=...` and a `GET /verify` page
+  that checks the proof on the device.
+- `tachyon/static/verify_core.js` - the single verifier implementation, inlined
+  into the phone page and loaded by the Node test harness so the two cannot
+  drift.
+
+### Fixed - cross-language hash mismatch
+
+The JavaScript verifier omitted the `0x00` separator that `encoding.digest()`
+places after the domain tag. The byte is invisible in terminal output, so the
+code looked correct while every client-side verification failed against a server
+that reported success. `tests/test_lightclient.py` now cross-checks Python and
+JavaScript verdicts across inclusion, exclusion, wrong-account, stale-root,
+tampered-branch and inflated-value cases and requires agreement.
+
+### Changed - performance
+
+`State.set()` now recomputes a 256-level SMT path per write instead of rebuilding
+all leaves. Single-process benchmark throughput moved from roughly 1230-1300
+tx/s to roughly 980-1220 tx/s as a result; the trade is real state commitment and
+provable balances for some write throughput. This has only been measured in one
+process and is not a networked figure.
+
+
 ### Fixed — claims that were not true yet
 
 Two features were advertised before they were real. Both are now implemented and

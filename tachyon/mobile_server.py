@@ -32,9 +32,11 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from .mobile_pool import MobilePool
+from .lightclient import balance_key, proof_to_dict
 
 MAX_BODY_BYTES = 64 * 1024
 
@@ -131,6 +133,35 @@ class MiningServer:
             "difficulty": record.difficulty,
         }
 
+    def _balance_proof(self, query: dict) -> dict:
+        """Serve a header plus an SMT balance proof for client-side verification.
+
+        The response is intentionally *untrusted* data: it is only meaningful if
+        the caller folds the proof to ``header.state_root`` itself. Nothing here
+        asserts the balance is correct.
+        """
+        miner = query.get("miner")
+        if not miner:
+            raise ValueError("miner query parameter is required")
+        assembler = getattr(self.pool, "assembler", None)
+        if assembler is None:
+            raise ValueError("this pool has no assembler, so it commits no state")
+        ledger = assembler.ledger
+        if not ledger.blocks:
+            raise ValueError("no blocks assembled yet")
+
+        block = ledger.blocks[max(ledger.blocks)]
+        return {
+            "ok": True,
+            "address": miner,
+            "header": {
+                "slot": block.header.slot,
+                "hash": block.header.hash().hex(),
+                "state_root": block.header.state_root.hex(),
+            },
+            "proof": proof_to_dict(ledger.state.prove(balance_key(miner))),
+        }
+
     # ---------- server plumbing ----------
 
     def _make_handler(self):
@@ -172,13 +203,24 @@ class MiningServer:
                 self.end_headers()
 
             def do_GET(self):
-                path = self.path.split("?", 1)[0]
+                from urllib.parse import parse_qs
+
+                raw_path, _, raw_query = self.path.partition("?")
+                path = raw_path
+                query = {k: v[0] for k, v in parse_qs(raw_query).items()}
                 if path == "/health":
                     return self._send(200, {"ok": True, "version": "0.1.0"})
                 if path == "/status":
                     return self._send(200, {"ok": True, **server.pool.status()})
                 if path == "/leaderboard":
                     return self._send(200, {"ok": True, "miners": server.pool.leaderboard()})
+                if path == "/balance-proof":
+                    try:
+                        return self._send(200, server._balance_proof(query))
+                    except ValueError as exc:
+                        return self._send(400, {"ok": False, "error": str(exc)})
+                if path == "/verify":
+                    return self._send(200, VERIFY_HTML, "text/html; charset=utf-8")
                 if path in ("/", "/index.html"):
                     return self._send(200, CLIENT_HTML, "text/html; charset=utf-8")
                 return self._send(404, {"ok": False, "error": "not found"})
@@ -229,6 +271,119 @@ class MiningServer:
     def url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
+
+_CORE_JS_PATH = Path(__file__).with_name("static") / "verify_core.js"
+
+
+def _load_verifier_core() -> str:
+    """Read the single shared proof verifier.
+
+    The browser page inlines this exact text and ``tests/verify_proof.mjs``
+    loads the same file, so the client and the test harness cannot disagree
+    about the wire contract.
+    """
+    try:
+        return _CORE_JS_PATH.read_text(encoding="utf-8")
+    except OSError as exc:  # pragma: no cover - only if the tree is broken
+        raise RuntimeError(f"cannot load proof verifier core: {exc}") from exc
+
+
+VERIFY_HTML = """<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Tachyon Balance Verifier</title>
+<style>
+:root{color-scheme:dark}
+body{margin:0;font:16px/1.5 system-ui,-apple-system,sans-serif;background:#0b0a12;color:#e8e6f0;
+     padding:20px;max-width:560px;margin:0 auto}
+h1{font-size:19px;margin:0 0 4px;letter-spacing:.3px}
+.sub{color:#8d88a8;font-size:13px;margin-bottom:16px}
+.card{background:#16141f;border:1px solid #262238;border-radius:14px;padding:16px;margin-bottom:12px}
+input{width:100%;padding:11px;border-radius:10px;border:1px solid #262238;background:#0b0a12;
+      color:#e8e6f0;font-size:15px;box-sizing:border-box;margin-bottom:10px}
+button{width:100%;padding:14px;border:0;border-radius:12px;font-size:15px;font-weight:600;
+       background:#7c5cff;color:#fff}
+button:disabled{background:#312b4d;color:#8d88a8}
+.row{display:flex;justify-content:space-between;padding:5px 0;font-size:14px;gap:12px}
+.row b{font-variant-numeric:tabular-nums;text-align:right}
+.verdict{border-radius:12px;padding:14px;font-weight:600;text-align:center;margin-top:6px}
+.good{background:#12351f;color:#5ee18a;border:1px solid #1d6b38}
+.bad{background:#351414;color:#ff8b8b;border:1px solid #6b1d1d}
+#log{font:11px/1.55 ui-monospace,monospace;color:#8d88a8;white-space:pre-wrap;max-height:170px;overflow:auto}
+</style></head>
+<body>
+<h1>Tachyon Balance Verifier</h1>
+<div class="sub">Proves a balance against a block header without trusting this server.</div>
+
+<div class="card">
+  <input id="miner" placeholder="miner address, e.g. phone-a">
+  <button id="check">Verify my balance</button>
+  <div id="verdict"></div>
+</div>
+
+<div class="card">
+  <div class="row"><span>Header slot</span><b id="slot">&mdash;</b></div>
+  <div class="row"><span>State root</span><b id="root" style="font:11px ui-monospace,monospace">&mdash;</b></div>
+  <div class="row"><span>Balance (committed)</span><b id="balance">&mdash;</b></div>
+</div>
+
+<div class="card"><div id="log">idle</div></div>
+
+<script>
+CORE_JS_PLACEHOLDER
+</script>
+<script>
+(function (){
+  var $ = function(id){ return document.getElementById(id); };
+  function log(m){ $('log').textContent = m + "\n" + $('log').textContent; }
+
+  $('check').onclick = async function () {
+    var miner = $('miner').value.trim();
+    if (!miner) { log('enter a miner address'); return; }
+    $('verdict').textContent = '';
+    $('verdict').className = '';
+    $('check').disabled = true;
+
+    try {
+      var resp = await fetch('/balance-proof?miner=' + encodeURIComponent(miner));
+      var body = await resp.json();
+      if (!body.ok) { log('server: ' + (body.error || 'unknown error')); $('check').disabled = false; return; }
+
+      var header = body.header;
+      $('slot').textContent = header.slot;
+      $('root').textContent = header.state_root.slice(0, 24) + '...';
+      log('received header slot ' + header.slot + ' and a 256-entry proof');
+
+      // Verification happens entirely on this device. The server's claim that
+      // the balance is correct is not used for anything.
+      var result = TachyonVerify.verifyBalance(miner, body.proof, header.state_root);
+
+      if (result.ok) {
+        $('balance').textContent = result.balance.toLocaleString();
+        $('verdict').textContent = 'VERIFIED on this device';
+        $('verdict').className = 'verdict good';
+        log('proof folded to the header state_root: OK');
+      } else {
+        $('balance').textContent = 'not trusted';
+        $('verdict').textContent = 'REJECTED: ' + result.reason;
+        $('verdict').className = 'verdict bad';
+        log('verification failed: ' + result.reason);
+      }
+    } catch (err) {
+      log('error: ' + err.message);
+    } finally {
+      $('check').disabled = false;
+    }
+  };
+})();
+</script>
+</body></html>
+"""
+
+# Inline the shared verifier so the page and the Node test harness run the
+# exact same code. Without this the page ships a placeholder and the verify
+# button fails with "TachyonVerify is not defined".
+VERIFY_HTML = VERIFY_HTML.replace("CORE_JS_PLACEHOLDER", _load_verifier_core())
 
 CLIENT_HTML = """<!doctype html>
 <html><head><meta charset="utf-8">

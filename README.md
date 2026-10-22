@@ -204,6 +204,7 @@ tachyon/
 ├── mobile_pool.py      # share accounting and block assembly
 ├── mobile_server.py    # HTTP transport + embedded phone client
 ├── mobile_chain.py     # pooled shares -> real hash-linked blocks
+├── lightclient.py     # balance proofs + wire serialisation
 ├── storage.py     # append-only ledger persistence
 ├── networking.py  # peer gossip
 ├── rpc.py         # JSON-RPC server
@@ -214,9 +215,66 @@ scripts/mobile_mine.py      # Termux/Android CLI miner
 tests/test_crypto.py        # RFC 8032 vectors
 tests/test_mobile.py        # mobile protocol, pool, HTTP (53 checks)
 tests/test_mobile_chain.py  # SMT commitment + block assembly (59 checks)
+tests/test_lightclient.py   # balance proofs, Python/JS cross-check (29 checks)
+tests/verify_proof.mjs      # Node CLI over the shared verifier core
+tachyon/static/verify_core.js  # single verifier source for browser + tests
 ```
 
 ---
+
+---
+
+## 🔐 Light-Client Balance Proofs
+
+A phone should not have to trust the pool operator to tell it its own balance.
+Now that state commits through a real Sparse Merkle Tree, it does not have to.
+
+```
+phone                                    node (untrusted)
+  |-- GET /balance-proof?miner=me ---------->|
+  |<-- header.state_root + 256-entry proof --|
+  |                                          |
+  |  fold leaf -> 256 siblings -> root       |  (server's opinion is unused)
+  |  accept only if root == header.state_root|
+```
+
+**The security property:** the node can lie about anything except the contents of
+committed state. A proof that folds to a header's `state_root` proves the balance
+was in the state that block committed to. A wrong balance would require breaking
+SHA-256.
+
+### Try it
+
+```bash
+python -m tachyon.mobile_server --port 8080
+```
+
+Then open `http://<pool-ip>:8080/verify` on the phone, type a miner name, and the
+page verifies the proof **on the device**. It uses the same verifier source the
+test suite runs (`tachyon/static/verify_core.js`), so the browser and the tests
+cannot drift apart.
+
+### Wire format
+
+```
+key  = "balance:" + address
+slot = sha256("tachyon:v1:" + "state_slot" + 0x00 + key)
+leaf = sha256("tachyon:v1:" + "smt:leaf"   + 0x00 + slot + value)
+node = sha256("tachyon:v1:" + "smt:node"   + 0x00 + left + right)
+```
+
+`value` is the balance as a big-endian u64, or absent for an exclusion proof
+(balance 0). `branch[0]` pairs with the least-significant bit of the slot.
+
+### A bug this caught
+
+The JavaScript verifier originally hashed `domain + tag + payload`, omitting the
+`0x00` separator after the tag. That separator is invisible in terminal output,
+so the code *looked* right and the server kept reporting valid balances while
+every client-side verification silently failed. `tests/test_lightclient.py` now
+runs Python and JavaScript over the same eight accept/reject cases and requires
+them to agree.
+
 
 ## ⚠️ Security Disclaimer
 
