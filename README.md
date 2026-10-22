@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ Tachyon
+# ⚡ Tachyon-Blockchain
 ### A From-Scratch High-Performance Blockchain
 
 ![Python](https://img.shields.io/badge/Python-3.12+-blue) ![Dependencies](https://img.shields.io/badge/Dependencies-none-success) ![Consensus](https://img.shields.io/badge/Consensus-Stake--Weighted%20BFT-green) ![Status](https://img.shields.io/badge/Status-Experimental-orange)
