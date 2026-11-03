@@ -60,7 +60,7 @@ class DifficultyEngine:
 
     def verify_block(self, payload: bytes, nonce: int, tier: ComputeTier) -> bool:
         target_diff = self.get_target_difficulty(tier)
-        h = digest("tachyon-pow", payload, nonce.to_bytes(4, 'big'))
+        h = digest("tachyon-pow", payload, nonce.to_bytes(8, 'big'))
         threshold = (1 << (256 - target_diff))
         return int.from_bytes(h, 'big') < threshold
 
@@ -69,9 +69,9 @@ def find_fair_block_nonce(payload: bytes, tier: ComputeTier, engine: DifficultyE
     nonce = 0
     target_diff = engine.get_target_difficulty(tier)
     threshold = (1 << (256 - target_diff))
-    
+
     while nonce < max_attempts:
-        h = digest("tachyon-pow", payload, nonce.to_bytes(4, 'big'))
+        h = digest("tachyon-pow", payload, nonce.to_bytes(8, 'big'))
         if int.from_bytes(h, 'big') < threshold:
             return nonce
         nonce += 1
@@ -89,14 +89,14 @@ def simulate_fair_mining(payload: bytes, rounds: int = 5) -> None:
         t0 = time.perf_counter()
         arm_nonce = find_fair_block_nonce(payload + f"-arm-{r}".encode(), ComputeTier.ARM_MOBILE, engine)
         arm_time = time.perf_counter() - t0
-        
+
         t0 = time.perf_counter()
         srv_nonce = find_fair_block_nonce(payload + f"-srv-{r}".encode(), ComputeTier.X86_SERVER, engine)
         srv_time = time.perf_counter() - t0
-        
+
         arm_status = f"Found in {arm_time*1000:.2f}ms" if arm_nonce is not None else "Not found"
         srv_status = f"Found in {srv_time*1000:.2f}ms" if srv_nonce is not None else "Not found"
-        
+
         print(f"Round {r}: ARM Phone ({arm_status}) vs Server ({srv_status})")
 
     print()
@@ -109,7 +109,15 @@ if __name__ == "__main__":
 
 
 def verify_block_nonce(payload: bytes, nonce: int, tier: ComputeTier, engine: DifficultyEngine) -> bool:
-    """Verify a nonce against the fair-play target for a tier."""
+    """Verify a nonce against the fair-play target for a tier.
+
+    Properly verifies the nonce by checking:
+    1. Nonce is not None
+    2. Nonce is within valid u64 range
+    3. The hash of (payload || nonce) is below the threshold for the tier
+    """
     if nonce is None:
+        return False
+    if not 0 <= nonce < 1 << 64:
         return False
     return engine.verify_block(payload, nonce, tier)

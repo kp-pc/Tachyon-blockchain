@@ -42,6 +42,7 @@ from .chain import (
     Transaction,
 )
 from .encoding import digest, u64
+from .crypto import KeyPair
 
 BALANCE_TAG = "balance"
 
@@ -65,10 +66,12 @@ class BlockAssembler:
         ledger: Optional[Ledger] = None,
         leader: str = "mobile-pool",
         block_weight_threshold: int = 1 << 20,
+        leader_keypair: Optional[KeyPair] = None,
     ):
         self.ledger = ledger or Ledger()
         self.leader = leader
         self.block_weight_threshold = block_weight_threshold
+        self.leader_keypair = leader_keypair
         self._pending: Dict[str, int] = {}
         self._pending_total = 0
         self.assembled: List[AssembledBlock] = []
@@ -138,12 +141,18 @@ genesis, so this must run before any assembly.
             current = self.ledger.state.get(key)
             balance = int.from_bytes(current, "big") if current else 0
             self.ledger.state.set(key, u64(balance + weight))
+            # Sign reward transactions with the assembler's key pair
+            reward_msg = canonical_reward(miner, weight)
+            if self.leader_keypair is not None:
+                reward_sig = self.leader_keypair.sign(reward_msg)
+            else:
+                reward_sig = b""
             transactions.append(
                 Transaction(
                     sender=self.leader,
                     nonce=len(self.assembled),
-                    instructions=[("reward", canonical_reward(miner, weight))],
-                    signature=b"",  # pool-signed rewards; empty means "assembler-signed"
+                    instructions=[("reward", reward_msg)],
+                    signature=reward_sig,
                     slot=slot,
                 )
             )
@@ -194,7 +203,7 @@ genesis, so this must run before any assembly.
     @staticmethod
     def balance_key(miner: str) -> bytes:
         """State key for a miner balance. Public so verifiers derive it identically."""
-        return BALANCE_TAG.encode() + b":" + miner.encode("utf-8")
+        return digest('balance_key', miner.encode())
 
     def balance_of(self, miner: str) -> int:
         raw = self.ledger.state.get(self.balance_key(miner))

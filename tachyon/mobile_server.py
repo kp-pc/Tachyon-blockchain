@@ -30,15 +30,48 @@ GET  /                                                -> embedded mining page
 from __future__ import annotations
 
 import json
+import ssl
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .mobile_pool import MobilePool
 from .lightclient import balance_key, proof_to_dict
 
 MAX_BODY_BYTES = 64 * 1024
+
+
+class _RateLimiter:
+    """Simple per-IP sliding-window rate limiter."""
+
+    def __init__(self, max_requests: int, window_seconds: float = 60.0):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._hits: Dict[str, List[float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, ip: str) -> bool:
+        now = time.time()
+        with self._lock:
+            hits = self._hits.get(ip, [])
+            hits = [t for t in hits if now - t < self.window_seconds]
+            if len(hits) >= self.max_requests:
+                self._hits[ip] = hits
+                return False
+            hits.append(now)
+            self._hits[ip] = hits
+            return True
+
+    def remaining(self, ip: str) -> int:
+        now = time.time()
+        with self._lock:
+            hits = self._hits.get(ip, [])
+            hits = [t for t in hits if now - t < self.window_seconds]
+            self._hits[ip] = hits
+            return max(0, self.max_requests - len(hits))
+
 
 DEPLOYMENT_NOTES = """
 Before exposing this beyond localhost/lan you MUST:
@@ -77,10 +110,27 @@ class _Router:
 class MiningServer:
     """Wraps a MobilePool in an HTTP server for phone clients."""
 
-    def __init__(self, pool: Optional[MobilePool] = None, host: str = "0.0.0.0", port: int = 8080):
+    def __init__(
+        self,
+        pool: Optional[MobilePool] = None,
+        host: str = "[IP_ADDRESS]",
+        port: int = 8080,
+        use_tls: bool = False,
+        cert_file: Optional[str] = None,
+        key_file: Optional[str] = None,
+        cors_whitelist: Optional[List[str]] = None,
+        ticket_rate: int = 10,
+        share_rate: int = 30,
+    ):
         self.pool = pool or MobilePool()
         self.host = host
         self.port = port
+        self.use_tls = use_tls
+        self.cert_file = cert_file
+        self.key_file = key_file
+        self.cors_whitelist = cors_whitelist or []
+        self._ticket_limiter = _RateLimiter(ticket_rate)
+        self._share_limiter = _RateLimiter(share_rate)
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -187,7 +237,10 @@ class MiningServer:
                 self.send_response(code)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(body)))
-                self.send_header("Access-Control-Allow-Origin", "*")
+                origin = self.headers.get("Origin", "*")
+                if server.cors_whitelist and origin not in server.cors_whitelist:
+                    origin = "*" if "*" in server.cors_whitelist else origin
+                self.send_header("Access-Control-Allow-Origin", origin)
                 self.send_header("Access-Control-Allow-Headers", "Content-Type")
                 self.end_headers()
                 try:
@@ -197,7 +250,10 @@ class MiningServer:
 
             def do_OPTIONS(self):
                 self.send_response(204)
-                self.send_header("Access-Control-Allow-Origin", "*")
+                origin = self.headers.get("Origin", "*")
+                if server.cors_whitelist and origin not in server.cors_whitelist:
+                    origin = "*" if "*" in server.cors_whitelist else origin
+                self.send_header("Access-Control-Allow-Origin", origin)
                 self.send_header("Access-Control-Allow-Headers", "Content-Type")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                 self.end_headers()
@@ -243,6 +299,15 @@ class MiningServer:
                         raise ValueError("body must be a JSON object")
                 except (ValueError, UnicodeDecodeError) as exc:
                     return self._send(400, {"ok": False, "error": f"bad json: {exc}"})
+                # Per-IP rate limiting
+                client_ip = self.client_address[0]
+                if path == "/ticket":
+                    if not server._ticket_limiter.allow(client_ip):
+                        return self._send(429, {"ok": False, "error": "rate limit exceeded for /ticket"})
+                elif path == "/share":
+                    if not server._share_limiter.allow(client_ip):
+                        return self._send(429, {"ok": False, "error": "rate limit exceeded for /share"})
+
                 try:
                     result = handler(body)
                 except ValueError as exc:
@@ -256,6 +321,12 @@ class MiningServer:
     def start(self) -> None:
         self._httpd = ThreadingHTTPServer((self.host, self.port), self._make_handler())
         self.port = self._httpd.server_address[1]
+        if self.use_tls:
+            if not self.cert_file or not self.key_file:
+                raise RuntimeError("cert_file and key_file required when use_tls=True")
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(self.cert_file, self.key_file)
+            self._httpd.socket = ctx.wrap_socket(self._httpd.socket, server_side=True)
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
 
@@ -269,7 +340,8 @@ class MiningServer:
             self._thread = None
 
     def url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        scheme = "https" if self.use_tls else "http"
+        return f"{scheme}://{self.host}:{self.port}"
 
 
 _CORE_JS_PATH = Path(__file__).with_name("static") / "verify_core.js"

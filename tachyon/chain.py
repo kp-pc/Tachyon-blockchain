@@ -15,10 +15,10 @@ from __future__ import annotations
 import time
 import threading
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Set, Tuple, Any
 
 from .encoding import u64, i64, digest, canonical_json
-from .crypto import KeyPair, verify, digest as crypto_digest
+from .crypto import KeyPair, verify, digest as crypto_digest, public_key_from_address
 from .merkle import root as merkle_root
 from .smt import SparseMerkleTree
 
@@ -151,6 +151,7 @@ class Ledger:
         self.finalized_slot = -1
         self.votes: Dict[int, List[Vote]] = {}
         self._stake_map: Dict[str, int] = {}
+        self._voted_voters: Dict[int, Set[str]] = {}
         self.state = State()
         self._lock = threading.Lock()
         self.current_slot = GENESIS_SLOT
@@ -168,14 +169,33 @@ class Ledger:
                 return False
             if block.header.parent_slot != -1 and block.header.parent_slot not in self.blocks:
                 return False
+            # Verify all transactions have valid signatures (skip empty = pool-signed)
+            for tx in block.transactions:
+                if not tx.signature:
+                    continue
+                try:
+                    sender_pk = public_key_from_address(tx.sender)
+                except Exception:
+                    return False
+                if not tx.verify(sender_pk):
+                    return False
             self.blocks[block.header.slot] = block
             return True
 
     def add_vote(self, vote: Vote) -> bool:
         with self._lock:
+            # Verify the voter is a registered validator (has stake set)
+            if self.get_stake(vote.voter) <= 0:
+                return False
+            # Replay protection: check that the same voter hasn't already voted for this slot
+            voted_set = self._voted_voters.get(vote.slot, set())
+            if vote.voter in voted_set:
+                return False
             if vote.slot not in self.votes:
                 self.votes[vote.slot] = []
             self.votes[vote.slot].append(vote)
+            voted_set.add(vote.voter)
+            self._voted_voters[vote.slot] = voted_set
             return self._attempt_finalize(vote.slot)
 
     def _attempt_finalize(self, slot: int) -> bool:

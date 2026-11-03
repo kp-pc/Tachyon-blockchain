@@ -46,7 +46,7 @@ BALANCE_TAG = "balance"
 
 def balance_key(address: str) -> bytes:
     """Application state key for a miner balance."""
-    return BALANCE_TAG.encode() + b":" + address.encode("utf-8")
+    return digest('balance_key', address.encode())
 
 
 def balance_slot(address: str) -> bytes:

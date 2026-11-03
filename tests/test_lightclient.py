@@ -32,6 +32,7 @@ from tachyon.lightclient import (
     latest_state_root,
     verify_balance_proof,
 )
+from tachyon.encoding import digest
 from tachyon.mobile_chain import BlockAssembler
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -71,7 +72,7 @@ def run_js(address: str, proof: dict, state_root_hex: str):
 
 def test_derivation() -> None:
     print("\n[derivation]")
-    check("balance_key is readable", balance_key("phone-a") == b"balance:phone-a")
+    check("balance_key is readable", balance_key("phone-a") == digest("balance_key", b"phone-a"))
     check("slot is 32 bytes", len(balance_slot("phone-a")) == 32)
     check("slot is deterministic", balance_slot("phone-a") == balance_slot("phone-a"))
     check("different addresses give different slots", balance_slot("phone-a") != balance_slot("phone-b"))

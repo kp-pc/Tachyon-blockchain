@@ -97,7 +97,7 @@
 
   var EMPTY_LEAF = digest('smt:leaf', new Uint8Array(0));
 
-  function balanceKey(address) { return utf8Bytes('balance:' + address); }
+  function balanceKey(address) { return digest('balance_key', utf8Bytes(address)); }
   function balanceSlot(address) { return digest('state_slot', balanceKey(address)); }
 
   function hexToBytes(hex) {

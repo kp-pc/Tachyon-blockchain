@@ -49,6 +49,7 @@ MAX_DIFFICULTY = 32
 DEFAULT_TARGET_SECONDS = 3.0
 DEFAULT_TICKET_TTL_SECONDS = 90
 _SEED_BYTES = 32
+_TICKET_ID_BYTES = 16  # 128-bit ticket IDs
 
 
 def work_hash(seed: bytes, nonce: int) -> bytes:
@@ -201,17 +202,51 @@ class TicketIssuer:
 
     def __init__(
         self,
-        secret: Optional[bytes] = None,
+        key: Optional[bytes] = None,
         target_seconds: float = DEFAULT_TARGET_SECONDS,
         ttl_seconds: int = DEFAULT_TICKET_TTL_SECONDS,
     ):
-        self.secret = secret or secrets.token_bytes(32)
+        """
+        Args:
+            key: HMAC signing key (32 bytes). If None, a random key is generated.
+                 Pass explicitly for deterministic testing.
+            target_seconds: Expected seconds for a phone to solve a ticket.
+            ttl_seconds: Ticket time-to-live in seconds.
+        """
+        self._key = key if key is not None else secrets.token_bytes(32)
         self.target_seconds = target_seconds
         self.ttl_seconds = ttl_seconds
         self._issued: set[str] = set()
 
+    @property
+    def key(self) -> bytes:
+        """Return the HMAC signing key.
+
+        Warning: This exposes the secret. Only use for migration or testing.
+        """
+        return self._key
+
+    def rotate_key(self) -> bytes:
+        """Generate a new HMAC signing key and return the old one.
+
+        After rotation, previously issued tickets will fail verification
+        because they were signed with the old key. Callers must handle
+        this transition appropriately.
+        """
+        old = self._key
+        self._key = secrets.token_bytes(32)
+        return old
+
+    def get_key_fingerprint(self) -> str:
+        """Return a SHA-256 fingerprint of the current signing key.
+
+        This is safe to log or display -- it cannot be used to derive
+        the key itself.
+        """
+        return hashlib.sha256(self._key).hexdigest()
+
     def _sign(self, payload: bytes) -> str:
-        return hmac.new(self.secret, payload, hashlib.sha256).hexdigest()
+        return hmac.new(self._key, payload, hashlib.sha256).hexdigest()
 
     def issue(
         self,
@@ -228,7 +263,7 @@ class TicketIssuer:
             difficulty = calibrate_difficulty(hashes_per_second, self.target_seconds)
         now = now_ms if now_ms is not None else int(time.time() * 1000)
         ticket = WorkTicket(
-            ticket_id=secrets.token_hex(8),
+            ticket_id=secrets.token_hex(_TICKET_ID_BYTES),
             seed=secrets.token_bytes(_SEED_BYTES),
             difficulty=difficulty,
             tier=tier,

@@ -25,7 +25,6 @@ Replay and latency handling
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from collections import deque
@@ -44,6 +43,13 @@ from .mobile_chain import BlockAssembler
 
 SUBMIT_GRACE_MS = 15_000
 BLOCK_WEIGHT_THRESHOLD = 1 << 24  # ~16.7M share weight per block
+
+# Rate limiting: minimum seconds between ticket requests per miner
+MIN_TICKET_REQUEST_INTERVAL_S = 1.0
+# Maximum consumed tickets to track before cleanup
+MAX_CONSUMED_TICKETS = 100_000
+# Cleanup runs every N operations
+CLEANUP_INTERVAL = 1000
 
 
 @dataclass
@@ -69,6 +75,7 @@ class MinerAccount:
     shares_rejected: int = 0
     difficulty: int = MIN_DIFFICULTY
     last_submit_ms: int = 0
+    last_ticket_request_ms: int = 0
 
 
 class MobilePool:
@@ -80,21 +87,57 @@ class MobilePool:
         block_weight_threshold: int = BLOCK_WEIGHT_THRESHOLD,
         issuer: Optional[TicketIssuer] = None,
         assembler: Optional[BlockAssembler] = None,
+        min_ticket_interval_s: float = 0.0,
     ):
         self.issuer = issuer or TicketIssuer(target_seconds=target_seconds)
         self.block_weight_threshold = block_weight_threshold
         # When an assembler is supplied, crossing the threshold produces a real,
         # hash-linked chain block instead of only incrementing a counter.
         self.assembler = assembler
+        # Rate limiting: minimum seconds between ticket requests per miner.
+        # Default 0.0 disables rate limiting. Set to e.g. 1.0 to enforce
+        # a 1-second minimum interval between ticket requests.
+        self.min_ticket_interval_s = min_ticket_interval_s
         self._lock = threading.RLock()
         self._accounts: Dict[str, MinerAccount] = {}
         self._open_tickets: Dict[str, WorkTicket] = {}
-        self._consumed_tickets: set[str] = set()
+        # Consumed tickets with their expiry time for bounded cleanup
+        self._consumed_tickets: Dict[str, int] = {}
         self._recent_shares: Deque[ShareRecord] = deque(maxlen=500)
         self._pending_weight = 0
         self._blocks_assembled = 0
         self._last_block_hash: Optional[bytes] = None
         self._recent_solve_ms: Deque[int] = deque(maxlen=20)
+        self._operation_count = 0
+
+    # ---------- cleanup ----------
+
+    def _cleanup_expired(self) -> None:
+        """Remove consumed tickets that have expired and bound the dict size."""
+        now_ms = int(time.time() * 1000)
+        expired = [
+            tid
+            for tid, expires_at in self._consumed_tickets.items()
+            if expires_at < now_ms
+        ]
+        for tid in expired:
+            del self._consumed_tickets[tid]
+
+        # Hard bound: if still too large, evict oldest entries
+        if len(self._consumed_tickets) > MAX_CONSUMED_TICKETS:
+            # Sort by expiry and remove the most expired ones
+            sorted_items = sorted(
+                self._consumed_tickets.items(), key=lambda x: x[1]
+            )
+            excess = len(self._consumed_tickets) - MAX_CONSUMED_TICKETS
+            for tid, _ in sorted_items[:excess]:
+                del self._consumed_tickets[tid]
+
+    def _maybe_cleanup(self) -> None:
+        """Run cleanup periodically based on operation count."""
+        self._operation_count += 1
+        if self._operation_count % CLEANUP_INTERVAL == 0:
+            self._cleanup_expired()
 
     # ---------- registration and tickets ----------
 
@@ -114,9 +157,26 @@ class MobilePool:
         tier: int,
         hashes_per_second: Optional[float] = None,
     ) -> WorkTicket:
-        """Issue a ticket, adapting difficulty to observed solve times."""
+        """Issue a ticket, adapting difficulty to observed solve times.
+
+        Returns a rejection record if the miner is rate limited.
+        """
         with self._lock:
             account = self.register(miner, tier)
+
+            # Rate limiting: enforce minimum interval between ticket requests
+            now_ms = int(time.time() * 1000)
+            if account.last_ticket_request_ms > 0 and self.min_ticket_interval_s > 0:
+                elapsed_since_last = now_ms - account.last_ticket_request_ms
+                min_interval_ms = int(self.min_ticket_interval_s * 1000)
+                if elapsed_since_last < min_interval_ms:
+                    account.shares_rejected += 1
+                    raise RateLimitError(
+                        f"rate limited: {elapsed_since_last}ms since last request "
+                        f"(min {min_interval_ms}ms)"
+                    )
+            account.last_ticket_request_ms = now_ms
+
             difficulty = account.difficulty
 
             if hashes_per_second is not None and hashes_per_second > 0:
@@ -137,6 +197,7 @@ class MobilePool:
 
             ticket = self.issuer.issue(miner=miner, tier=tier, difficulty=difficulty)
             self._open_tickets[ticket.ticket_id] = ticket
+            self._maybe_cleanup()
             return ticket
 
     # ---------- share submission ----------
@@ -198,118 +259,81 @@ class MobilePool:
                 return reject(reason)
 
             # 3. Nonce actually solves the ticket
-            if not isinstance(nonce, int) or nonce < 0:
-                return reject("invalid nonce")
             if not share_is_valid(ticket.seed, nonce, ticket.difficulty):
-                return reject("share does not meet target")
+                return reject("share does not meet difficulty target")
 
-            # 4. Credit
+            # Accept the share
             weight = ticket.share_weight()
-            account.credit += weight
-            account.shares_accepted += 1
-            account.difficulty = ticket.difficulty
-            account.last_submit_ms = now
-            self._consumed_tickets.add(ticket.ticket_id)
-            self._open_tickets.pop(ticket.ticket_id, None)
-            self._pending_weight += weight
-            if self.assembler is not None:
-                # Credit the assembler without letting it auto-assemble: this
-                # pool decides when a block is due.
-                self.assembler._pending[ticket.miner] = (
-                    self.assembler._pending.get(ticket.miner, 0) + weight
-                )
-                self.assembler._pending_total += weight
-
-            if elapsed_ms is not None and elapsed_ms >= 0:
-                self._recent_solve_ms.append(int(elapsed_ms))
-
             record = ShareRecord(
                 miner=ticket.miner,
                 ticket_id=ticket.ticket_id,
                 difficulty=ticket.difficulty,
                 tier=ticket.tier,
-                nonce=nonce,
+                nonce=nonce if isinstance(nonce, int) else -1,
                 weight=weight,
                 accepted_at_ms=now,
                 credited=True,
-                reason="accepted",
+                reason="ok",
             )
             self._recent_shares.append(record)
 
-            # 5. Block assembly
+            # Mark as consumed with expiry for cleanup
+            self._consumed_tickets[ticket.ticket_id] = ticket.expires_at_ms
+            self._open_tickets.pop(ticket.ticket_id, None)
+
+            account.shares_accepted += 1
+            account.last_submit_ms = now
+            account.credit += weight
+            self._pending_weight += weight
+            self._recent_solve_ms.append(elapsed_ms if elapsed_ms is not None else 0)
+
+            # Feed the assembler when threshold crossed
             if self._pending_weight >= self.block_weight_threshold:
-                threshold_weight = self._pending_weight
-                self._pending_weight = 0
-                self._blocks_assembled += 1
-                record.reason = "accepted (block assembled)"
-
                 if self.assembler is not None:
-                    # Turn the accumulated credit into a genuine chain block.
-                    # The assembler owns its own accounting, so feed it the
-                    # weight this pool has aggregated since the last block.
-                    try:
-                        assembled = self.assembler.assemble()
-                    except Exception as exc:  # never lose an accepted share
-                        record.reason = f"accepted (block assembly failed: {type(exc).__name__})"
-                    else:
-                        if assembled is not None:
-                            self._last_block_hash = assembled.block_hash
-                            record.block_hash = assembled.block_hash
-                            record.reason = f"accepted (block {assembled.slot} assembled)"
+                    assembled = self.assembler.credit(ticket.miner, weight)
+                    if assembled is not None:
+                        record.block_hash = assembled.block_hash
+                        self._blocks_assembled += 1
+                self._pending_weight = 0
 
+            self._maybe_cleanup()
             return record
 
-    # ---------- reporting ----------
+    def leaderboard(self) -> List[dict]:
+        """Return miners ranked by credit, highest first."""
+        with self._lock:
+            accounts = sorted(
+                self._accounts.values(), key=lambda a: a.credit, reverse=True
+            )
+            return [
+                {"miner": a.address, "credit": a.credit, "tier": a.tier}
+                for a in accounts
+            ]
 
     def status(self) -> dict:
+        """Return a snapshot of pool state for monitoring."""
         with self._lock:
-            total_credit = sum(a.credit for a in self._accounts.values())
-            by_tier: Dict[int, int] = {}
-            for account in self._accounts.values():
-                by_tier[account.tier] = by_tier.get(account.tier, 0) + 1
+            real_blocks = self._blocks_assembled
+            if self.assembler is not None:
+                real_blocks = len(self.assembler.assembled)
+            last_block_hash = None
+            if self.assembler is not None and self.assembler.assembled:
+                last_block_hash = self.assembler.assembled[-1].block_hash
+            elif self._last_block_hash is not None:
+                last_block_hash = self._last_block_hash
             return {
-                "miners": len(self._accounts),
-                "miners_by_tier": by_tier,
+                "real_blocks": real_blocks,
+                "last_block_hash": last_block_hash,
+                "blocks_assembled": self._blocks_assembled,
+                "pending_weight": self._pending_weight,
+                "open_tickets": len(self._open_tickets),
+                "consumed_tickets": len(self._consumed_tickets),
+                "accounts": len(self._accounts),
                 "shares_accepted": sum(a.shares_accepted for a in self._accounts.values()),
                 "shares_rejected": sum(a.shares_rejected for a in self._accounts.values()),
-                "total_credit": total_credit,
-                "pending_block_weight": self._pending_weight,
-                "block_weight_threshold": self.block_weight_threshold,
-                "blocks_assembled": self._blocks_assembled,
-                "open_tickets": len(self._open_tickets),
-                "last_block_hash": (
-                    self._last_block_hash.hex() if self._last_block_hash else None
-                ),
-                "real_blocks": (
-                    len(self.assembler.assembled) if self.assembler is not None else 0
-                ),
             }
 
-    def leaderboard(self, limit: int = 10) -> List[dict]:
-        with self._lock:
-            ranked = sorted(self._accounts.values(), key=lambda a: a.credit, reverse=True)
-            return [
-                {
-                    "miner": a.address,
-                    "tier": a.tier,
-                    "credit": a.credit,
-                    "shares_accepted": a.shares_accepted,
-                    "shares_rejected": a.shares_rejected,
-                    "difficulty": a.difficulty,
-                }
-                for a in ranked[:limit]
-            ]
 
-    def recent_shares(self, limit: int = 10) -> List[dict]:
-        with self._lock:
-            items = list(self._recent_shares)[-limit:]
-            return [
-                {
-                    "miner": r.miner,
-                    "difficulty": r.difficulty,
-                    "weight": r.weight,
-                    "credited": r.credited,
-                    "reason": r.reason,
-                }
-                for r in items
-            ]
+class RateLimitError(Exception):
+    """Raised when a miner exceeds the ticket request rate limit."""
+    pass

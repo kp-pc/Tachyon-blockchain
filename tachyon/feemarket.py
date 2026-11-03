@@ -11,10 +11,11 @@ from .chain import Block, Ledger, BASE_FEE_INITIAL, BASE_FEE_MIN, SLOTS_PER_EPOC
 class FeeMarket:
     """Adjusts base fee each epoch based on block utilization."""
 
-    def __init__(self, initial_fee: int = BASE_FEE_INITIAL):
+    def __init__(self, initial_fee: int = BASE_FEE_INITIAL, max_block_txs: int = 1000):
         self.base_fee = initial_fee
         self.max_change_pct = 0.10  # 10% max change per adjustment
         self.target_utilization = 0.5  # 50% full target
+        self.max_block_txs = max_block_txs  # Maximum transactions per block
 
     def adjust(self, ledger: Ledger, slot: int) -> int:
         """Calculate base fee for the next epoch."""
@@ -31,7 +32,7 @@ class FeeMarket:
             block = ledger.blocks.get(s)
             if block:
                 total_txs += len(block.transactions)
-                total_capacity += 1  # simplified: 1 tx per capacity unit
+                total_capacity += self.max_block_txs  # Use actual block capacity
 
         if total_capacity == 0:
             return self.base_fee
