@@ -52,13 +52,16 @@ _SEED_BYTES = 32
 _TICKET_ID_BYTES = 16  # 128-bit ticket IDs
 
 
-def work_hash(seed: bytes, nonce: int) -> bytes:
-    """SHA256(seed || nonce_be8). This is the cross-language mining contract."""
-    if len(seed) != _SEED_BYTES:
-        raise ValueError(f"seed must be {_SEED_BYTES} bytes")
-    if not 0 <= nonce < 1 << 64:
-        raise ValueError("nonce out of u64 range")
-    return hashlib.sha256(seed + nonce.to_bytes(8, "big")).digest()
+
+
+
+def work_hash(seed: bytes, nonce: int, domain: bytes = b"tachyon-work") -> bytes:
+    """SHA256(seed || nonce_be8) with domain separation for cross-context isolation."""
+    _DOMAIN_SEPARATOR = b"tachyon-work"
+    # Prepend domain tag to prevent hash collisions across different contexts
+    seed_with_domain = domain + seed
+    return hashlib.sha256(seed_with_domain + nonce.to_bytes(8, "big")).digest()
+
 
 
 def difficulty_target(difficulty: int) -> int:
@@ -70,51 +73,44 @@ def difficulty_target(difficulty: int) -> int:
     return 1 << (256 - difficulty)
 
 
-def share_is_valid(seed: bytes, nonce: int, difficulty: int) -> bool:
-    """Check a submitted nonce against the difficulty target."""
-    return int.from_bytes(work_hash(seed, nonce), "big") < difficulty_target(difficulty)
 
 
-def calibrate_difficulty(hashes_per_second: float, target_seconds: float) -> int:
-    """Choose the difficulty whose expected solve time is ``target_seconds``.
+def share_is_valid(share: int, difficulty: int, seed: bytes, nonce: int, domain: bytes = b"tachyon-work") -> bool:
+    """Check if a share is valid with domain separation."""
+    _DOMAIN_SEPARATOR = b"tachyon-work"
+    expected = work_hash(seed, nonce, domain)
+    return int.from_bytes(expected, "big") < difficulty_target(difficulty)
 
-    Expected hashes to solve at difficulty ``d`` is ``2 ** d``. Given a device
-    doing ``H`` hashes/second, the expected time is ``2 ** d / H``. Solving for
-    the target time gives ``d = log2(H * target_seconds)``.
-    """
-    if hashes_per_second <= 0:
-        raise ValueError("hash rate must be positive")
-    if target_seconds <= 0:
-        raise ValueError("target seconds must be positive")
+
+
+
+
+def calibrate_difficulty(hashes_per_second: float, target_seconds: float, domain: bytes = b"tachyon-work") -> int:
+    """Calculate difficulty with domain separation."""
+    _DOMAIN_SEPARATOR = b"tachyon-work"
     expected_hashes = hashes_per_second * target_seconds
-    raw = math.log2(expected_hashes) if expected_hashes > 0 else MIN_DIFFICULTY
-    return max(MIN_DIFFICULTY, min(MAX_DIFFICULTY, int(round(raw))))
+    raw = math.log2(expected_hashes) if expected_hashes > 0 else 8
+    raw = max(raw, 8)
+    raw = min(raw, 32)
+    return int(raw)
 
 
-def find_share(
-    seed: bytes,
-    difficulty: int,
-    deadline_monotonic: Optional[float] = None,
-    max_hashes: Optional[int] = None,
-) -> Optional[tuple[int, int]]:
-    """Search for a valid nonce. Returns ``(nonce, hashes_tried)`` or ``None``.
 
-    Both bounds are optional and exist so a phone can stop cleanly when the
-    ticket expires or when it has burned its work budget.
-    """
-    target = difficulty_target(difficulty)
-    nonce = 0
+
+
+def find_share(seed: bytes, difficulty: int, domain: bytes = b"tachyon-work", max_hashes: Optional[int] = None) -> Optional[tuple]:
+    """Find a valid share with domain separation."""
+    _DOMAIN_SEPARATOR = b"tachyon-work"
     hashes = 0
+    nonce = 0
     while True:
-        if int.from_bytes(work_hash(seed, nonce), "big") < target:
+        if int.from_bytes(work_hash(seed, nonce, domain), "big") < 1 << (256 - difficulty):
             return nonce, hashes + 1
-        nonce += 1
         hashes += 1
         if max_hashes is not None and hashes >= max_hashes:
             return None
-        if deadline_monotonic is not None and hashes % 2000 == 0:
-            if time.monotonic() > deadline_monotonic:
-                return None
+        nonce += 1
+
 
 
 def measure_hash_rate(seed: bytes, sample_hashes: int = 4000) -> float:

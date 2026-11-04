@@ -89,6 +89,7 @@ class GossipProtocol:
             if not cert_file or not key_file:
                 raise ValueError("TLS requires both cert_file and key_file")
             self._ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            self._ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
             self._ssl_ctx.load_cert_chain(certfile=cert_file, keyfile=key_file)
 
     # ------------------------------------------------------------------
@@ -320,6 +321,7 @@ class GossipProtocol:
                     if self.use_tls and self._ssl_ctx is not None:
                         # Client-side TLS: create a new context per connection
                         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
                         ctx.check_hostname = False
                         ctx.verify_mode = ssl.CERT_NONE
                         s = ctx.wrap_socket(s)

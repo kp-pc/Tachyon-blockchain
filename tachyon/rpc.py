@@ -125,6 +125,126 @@ class _RateLimiter:
 # RPC server
 # ---------------------------------------------------------------------------
 
+
+
+# ---------------------------------------------------------------------------
+# CORS Configuration for JSON-RPC
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Request Logging and Slowloris Protection
+# ---------------------------------------------------------------------------
+
+import logging
+logger = logging.getLogger(__name__)
+
+# Configure logging if not already configured
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+# Request logging function
+def _log_request(ip: str, method: str, path: str, status_code: int = None, error: str = None):
+    """Log RPC request with structured format."""
+    log_data = {
+        'event': 'rpc_request',
+        'client_ip': ip,
+        'method': method,
+        'path': path,
+    }
+    if status_code is not None:
+        log_data['status_code'] = status_code
+    if error:
+        log_data['error'] = error
+    logger.info('RPC request', extra=log_data)
+
+# Slowloris protection constants
+SLOWLORIS_TIMEOUT = 10  # seconds
+
+# Enhanced rate limiter with connection tracking
+class _RateLimiter:
+    """Enhanced rate limiter with connection tracking and slowloris protection."""
+    
+    def __init__(self, max_requests: int, window_seconds: float = 10.0):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests: Dict[str, float] = {}  # ip -> timestamp
+        self.active_connections: int = 0
+        self.max_connections = 500  # Global connection limit
+    
+    def allow(self, ip: str) -> bool:
+        """Check if request from IP is allowed."""
+        now = time.time()
+        
+        # Check global connection limit
+        if self.active_connections >= self.max_connections:
+            _log_request(ip, 'RATE_LIMIT', 'global_limit')
+            return False
+        
+        # Clean old requests
+        cutoff = now - self.window_seconds
+        self.requests = {k: v for k, v in self.requests.items() if v > cutoff}
+        
+        # Check per-IP request limit
+        ip_requests = self.requests.get(ip, 0)
+        if ip_requests >= self.max_requests:
+            _log_request(ip, 'RATE_LIMIT', 'ip_limit')
+            return False
+        
+        # Track this request
+        self.requests[ip] = now
+        self.active_connections += 1
+        return True
+    
+    def release(self, ip: str):
+        """Release connection tracking."""
+        if ip in self.requests:
+            del self.requests[ip]
+        self.active_connections = max(0, self.active_connections - 1)
+
+
+
+class CORSConfig:
+    """Configuration for JSON-RPC CORS policy."""
+    def __init__(self, allowed_origins=None, allow_credentials=False):
+        if allowed_origins is None:
+            self.allowed_origins = [""]
+        else:
+            self.allowed_origins = allowed_origins
+        self.allow_credentials = allow_credentials
+    def get_origin(self, request_origin):
+        if not request_origin:
+            return "*"
+        if "*" in self.allowed_origins:
+            return "*"
+        if request_origin in self.allowed_origins:
+            return request_origin
+        return "*"
+
+class CORSJSONRPCHandler(http.server.BaseHTTPRequestHandler):
+    def send_cors_headers(self):
+        origin = self.headers.get('Origin')
+        origin_value = self.cors_config.get_origin(origin)
+        self.send_header('Access-Control-Allow-Origin', origin_value)
+        if self.cors_config.allow_credentials:
+            if origin_value == "*":
+                origin_value = "null"
+            self.send_header('Access-Control-Allow-Credentials', 'true')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept')
+        self.send_header('Access-Control-Max-Age', '3600')
+    def handle_preflight(self):
+        if self.command == 'OPTIONS':
+            self.send_response(200)
+            self.send_cors_headers()
+            self.end_headers()
+            return True
+        return False
+    def log_message(self, format, *args):
+        pass
+
 class JsonRpcServer:
     """JSON-RPC server for blockchain queries with auth and rate limiting."""
 

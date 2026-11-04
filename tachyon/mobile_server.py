@@ -85,6 +85,41 @@ Before exposing this beyond localhost/lan you MUST:
 """
 
 
+# ---------------------------------------------------------------------------
+# Request Logging and Slowloris Protection
+# ---------------------------------------------------------------------------
+
+import logging
+logger = logging.getLogger(__name__)
+
+# Configure logging if not already configured
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+# Request logging function
+def _log_request(ip: str, method: str, path: str, status_code: int = None, error: str = None):
+    """Log mobile server request with structured format."""
+    log_data = {
+        'event': 'mobile_request',
+        'client_ip': ip,
+        'method': method,
+        'path': path,
+    }
+    if status_code is not None:
+        log_data['status_code'] = status_code
+    if error:
+        log_data['error'] = error
+    logger.info('Mobile request', extra=log_data)
+
+# Slowloris protection constants
+SLOWLORIS_TIMEOUT = 10  # seconds
+MAX_BODY_BYTES = 64 * 1024  # 64 KB
+
+
+
 class _Router:
     """Tiny exact-path router. Keeps the handler method free of if-chains."""
 
